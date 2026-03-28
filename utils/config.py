@@ -11,8 +11,9 @@ load_dotenv()
 SERPAPI_KEY   = os.getenv("SERPAPI_KEY", "your_serpapi_key_here")
 GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "your_groq_api_key_here")
 
-# ── DATABASE ─────────────────────────────────────────────
-DB_PATH = os.getenv("DB_PATH", "signalsense.db")
+# ── SUPABASE ─────────────────────────────────────────────
+SUPABASE_URL  = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY  = os.getenv("SUPABASE_KEY", "")
 
 # ── SERPAPI SETTINGS ─────────────────────────────────────
 SERPAPI_BASE_URL  = "https://serpapi.com/search"

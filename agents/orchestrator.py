@@ -8,7 +8,6 @@ Coordinates the full autonomous pipeline:
   Step 5 → Alerts Agent         (push high-confidence alerts)
 """
 
-import sqlite3
 from datetime import datetime
 from agents.market_data_agent import MarketDataAgent
 from agents.pattern_agent     import PatternAgent
@@ -16,7 +15,8 @@ from agents.backtest_agent    import BacktestAgent
 from agents.insight_agent     import InsightAgent
 from agents.alerts            import AlertsAgent
 from data.database            import Database
-from utils.config             import NIFTY50_SYMBOLS, DB_PATH, MIN_CONFIDENCE_ALERT, MIN_WIN_RATE_ALERT
+from data.supabase_client     import get_client
+from utils.config             import NIFTY50_SYMBOLS, MIN_CONFIDENCE_ALERT, MIN_WIN_RATE_ALERT
 
 
 class Orchestrator:
@@ -27,32 +27,20 @@ class Orchestrator:
         self.insight  = InsightAgent()
         self.alerts   = AlertsAgent()
         self.db       = Database()
-        self._ensure_log_table()
+        self.sb       = get_client()
 
     # ── LOGGING ──────────────────────────────────────────
-    def _ensure_log_table(self):
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS activity_log (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                level     TEXT,
-                message   TEXT
-            )
-        """)
-        conn.commit()
-        conn.close()
-
     def _log(self, message: str, level: str = "INFO"):
         ts = datetime.now().strftime("%H:%M:%S")
         print(f"[{ts}] [{level}] {message}")
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute(
-            "INSERT INTO activity_log (timestamp, level, message) VALUES (?,?,?)",
-            (ts, level, message)
-        )
-        conn.commit()
-        conn.close()
+        try:
+            self.sb.table("activity_log").insert({
+                "timestamp": ts,
+                "level":     level,
+                "message":   message,
+            }).execute()
+        except Exception:
+            pass  # Don't let logging failures break the pipeline
 
     # ── SINGLE SYMBOL PIPELINE ────────────────────────────
     def _process_symbol(self, symbol: str, force: bool = False) -> list[dict]:

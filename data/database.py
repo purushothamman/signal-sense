@@ -1,138 +1,135 @@
 """
 Module 5: Database Layer
-Central SQLite interface — read helpers used by orchestrator & dashboard.
+Central Supabase interface — read helpers used by orchestrator & dashboard.
 All write operations are handled by the individual agents.
 """
 
-import sqlite3
 import pandas as pd
 import json
 from datetime import datetime, timedelta
-from utils.config import DB_PATH
+from data.supabase_client import get_client
 
 
 class Database:
     def __init__(self):
-        self.path = DB_PATH
-
-    def _conn(self):
-        return sqlite3.connect(self.path)
+        self.client = get_client()
 
     # ── OHLCV ─────────────────────────────────────────────
     def get_ohlcv(self, symbol: str, days: int = 730) -> pd.DataFrame:
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        conn   = self._conn()
-        df     = pd.read_sql(
-            "SELECT * FROM ohlcv WHERE symbol=? AND date>=? ORDER BY date ASC",
-            conn, params=(symbol, cutoff)
+        resp = (
+            self.client.table("ohlcv")
+            .select("*")
+            .eq("symbol", symbol)
+            .gte("date", cutoff)
+            .order("date")
+            .execute()
         )
-        conn.close()
-        df["date"] = pd.to_datetime(df["date"], utc=True).dt.tz_localize(None)
+        df = pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+        if not df.empty:
+            df["date"] = pd.to_datetime(df["date"], utc=True).dt.tz_localize(None)
         return df
 
     def get_all_symbols(self) -> list[str]:
-        conn   = self._conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT symbol FROM ohlcv")
-        syms   = [r[0] for r in cursor.fetchall()]
-        conn.close()
-        return syms
+        resp = self.client.table("last_updated").select("symbol").execute()
+        if not resp.data:
+            return []
+        return sorted(list({row["symbol"] for row in resp.data}))
 
     def get_latest_price(self, symbol: str) -> float | None:
-        conn   = self._conn()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT close FROM ohlcv WHERE symbol=? ORDER BY date DESC LIMIT 1",
-            (symbol,)
+        resp = (
+            self.client.table("ohlcv")
+            .select("close")
+            .eq("symbol", symbol)
+            .order("date", desc=True)
+            .limit(1)
+            .execute()
         )
-        row = cursor.fetchone()
-        conn.close()
-        return row[0] if row else None
+        if resp.data:
+            return resp.data[0]["close"]
+        return None
 
     def get_summary(self, symbol: str) -> dict:
-        conn   = self._conn()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM stock_summary WHERE symbol=?", (symbol,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
-            return {}
-        cols = ["symbol","price","change","change_pct","market_cap",
-                "pe_ratio","exchange","currency","last_updated"]
-        return dict(zip(cols, row))
+        resp = (
+            self.client.table("stock_summary")
+            .select("*")
+            .eq("symbol", symbol)
+            .execute()
+        )
+        if resp.data:
+            return resp.data[0]
+        return {}
 
     # ── SIGNALS ───────────────────────────────────────────
     def get_signals(self, symbol: str = None, limit: int = 100) -> pd.DataFrame:
-        conn = self._conn()
+        query = self.client.table("signals").select("*")
         if symbol:
-            df = pd.read_sql(
-                "SELECT * FROM signals WHERE symbol=? ORDER BY created_at DESC LIMIT ?",
-                conn, params=(symbol, limit)
-            )
-        else:
-            df = pd.read_sql(
-                "SELECT * FROM signals ORDER BY created_at DESC LIMIT ?",
-                conn, params=(limit,)
-            )
-        conn.close()
-        return df
+            query = query.eq("symbol", symbol)
+        resp = query.order("created_at", desc=True).limit(limit).execute()
+        return pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
 
     def get_today_signals(self) -> pd.DataFrame:
         today = datetime.now().strftime("%Y-%m-%d")
-        conn  = self._conn()
-        df    = pd.read_sql(
-            "SELECT * FROM signals WHERE date=? ORDER BY confidence DESC",
-            conn, params=(today,)
+        resp = (
+            self.client.table("signals")
+            .select("*")
+            .eq("date", today)
+            .order("confidence", desc=True)
+            .execute()
         )
-        conn.close()
-        return df
+        return pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
 
     # ── BACKTEST ──────────────────────────────────────────
     def get_backtest(self, symbol: str, pattern: str) -> dict:
-        conn   = self._conn()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM backtest_results WHERE symbol=? AND pattern=?",
-            (symbol, pattern)
+        resp = (
+            self.client.table("backtest_results")
+            .select("*")
+            .eq("symbol", symbol)
+            .eq("pattern", pattern)
+            .execute()
         )
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
-            return {}
-        cols = ["id","symbol","pattern","win_rate","avg_return","max_drawdown",
-                "total_occurrences","profitable_trades","avg_win","avg_loss",
-                "risk_reward","created_at"]
-        return dict(zip(cols, row))
+        if resp.data:
+            return resp.data[0]
+        return {}
 
     def get_all_backtests(self) -> pd.DataFrame:
-        conn = self._conn()
-        df   = pd.read_sql("SELECT * FROM backtest_results ORDER BY win_rate DESC", conn)
-        conn.close()
-        return df
+        resp = (
+            self.client.table("backtest_results")
+            .select("*")
+            .order("win_rate", desc=True)
+            .execute()
+        )
+        return pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
 
     # ── INSIGHTS ──────────────────────────────────────────
     def get_insight(self, symbol: str, pattern: str, date: str) -> dict:
-        conn   = self._conn()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT insight_json FROM insights WHERE symbol=? AND pattern=? AND date=?",
-            (symbol, pattern, date)
+        resp = (
+            self.client.table("insights")
+            .select("insight_json")
+            .eq("symbol", symbol)
+            .eq("pattern", pattern)
+            .eq("date", date)
+            .execute()
         )
-        row = cursor.fetchone()
-        conn.close()
-        return json.loads(row[0]) if row else {}
+        if resp.data:
+            return json.loads(resp.data[0]["insight_json"])
+        return {}
 
     # ── ACTIVITY LOG ─────────────────────────────────────
     def get_activity_log(self, limit: int = 50) -> pd.DataFrame:
-        conn = self._conn()
         try:
-            df = pd.read_sql(
-                "SELECT * FROM activity_log ORDER BY id DESC LIMIT ?",
-                conn, params=(limit,)
+            resp = (
+                self.client.table("activity_log")
+                .select("*")
+                .order("id", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            df = pd.DataFrame(resp.data) if resp.data else pd.DataFrame(
+                columns=["id", "timestamp", "level", "message"]
             )
         except Exception:
-            df = pd.DataFrame(columns=["id","timestamp","level","message"])
-        conn.close()
+            df = pd.DataFrame(columns=["id", "timestamp", "level", "message"])
         return df.iloc[::-1].reset_index(drop=True)  # chronological order
 
     # ── DASHBOARD AGGREGATE ───────────────────────────────
@@ -141,28 +138,34 @@ class Database:
         Joins signals + backtest + insights into a single radar table.
         Used by the dashboard Market Radar view.
         """
-        conn = self._conn()
-        sig  = pd.read_sql(
-            "SELECT symbol, date, pattern, confidence, details "
-            "FROM signals ORDER BY created_at DESC LIMIT 300",
-            conn
+        sig_resp = (
+            self.client.table("signals")
+            .select("symbol, date, pattern, confidence, details")
+            .order("created_at", desc=True)
+            .limit(300)
+            .execute()
         )
-        bt   = pd.read_sql(
-            "SELECT symbol, pattern, win_rate, avg_return, risk_reward "
-            "FROM backtest_results",
-            conn
+        sig = pd.DataFrame(sig_resp.data) if sig_resp.data else pd.DataFrame()
+
+        bt_resp = (
+            self.client.table("backtest_results")
+            .select("symbol, pattern, win_rate, avg_return, risk_reward")
+            .execute()
         )
-        ins  = pd.read_sql(
-            "SELECT symbol, pattern, date, insight_json FROM insights",
-            conn
+        bt = pd.DataFrame(bt_resp.data) if bt_resp.data else pd.DataFrame()
+
+        ins_resp = (
+            self.client.table("insights")
+            .select("symbol, pattern, date, insight_json")
+            .execute()
         )
-        conn.close()
+        ins = pd.DataFrame(ins_resp.data) if ins_resp.data else pd.DataFrame()
 
         if sig.empty:
             return pd.DataFrame()
 
-        merged = sig.merge(bt,  on=["symbol","pattern"], how="left")
-        merged = merged.merge(ins, on=["symbol","pattern","date"], how="left")
+        merged = sig.merge(bt, on=["symbol", "pattern"], how="left")
+        merged = merged.merge(ins, on=["symbol", "pattern", "date"], how="left")
 
         def _extract(j, key, default="—"):
             try:
@@ -180,20 +183,43 @@ class Database:
 
     # ── STATS ─────────────────────────────────────────────
     def get_stats(self) -> dict:
-        conn   = self._conn()
-        cursor = conn.cursor()
+        try:
+            # stocks tracked
+            ohlcv_resp = self.client.table("last_updated").select("symbol", count="exact").execute()
+            stocks_tracked = ohlcv_resp.count if ohlcv_resp.count is not None else 0
 
-        def q(sql, params=()):
-            cursor.execute(sql, params)
-            row = cursor.fetchone()
-            return row[0] if row and row[0] is not None else 0
+            # total signals
+            sig_resp = self.client.table("signals").select("id", count="exact").execute()
+            total_signals = sig_resp.count if sig_resp.count is not None else 0
 
-        stats = {
-            "stocks_tracked": q("SELECT COUNT(DISTINCT symbol) FROM ohlcv"),
-            "total_signals":  q("SELECT COUNT(*) FROM signals"),
-            "today_signals":  q("SELECT COUNT(*) FROM signals WHERE date=?",
-                                (datetime.now().strftime("%Y-%m-%d"),)),
-            "avg_win_rate":   round(q("SELECT AVG(win_rate) FROM backtest_results"), 1),
-        }
-        conn.close()
-        return stats
+            # today signals
+            today = datetime.now().strftime("%Y-%m-%d")
+            today_resp = (
+                self.client.table("signals")
+                .select("id", count="exact")
+                .eq("date", today)
+                .execute()
+            )
+            today_signals = today_resp.count if today_resp.count is not None else 0
+
+            # avg win rate
+            bt_resp = self.client.table("backtest_results").select("win_rate").execute()
+            if bt_resp.data:
+                win_rates = [r["win_rate"] for r in bt_resp.data if r["win_rate"] is not None]
+                avg_win_rate = round(sum(win_rates) / len(win_rates), 1) if win_rates else 0
+            else:
+                avg_win_rate = 0
+
+            return {
+                "stocks_tracked": stocks_tracked,
+                "total_signals": total_signals,
+                "today_signals": today_signals,
+                "avg_win_rate": avg_win_rate,
+            }
+        except Exception:
+            return {
+                "stocks_tracked": 0,
+                "total_signals": 0,
+                "today_signals": 0,
+                "avg_win_rate": 0,
+            }

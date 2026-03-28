@@ -12,57 +12,19 @@ NSE symbol format for Google Finance: RELIANCE:NSE
 
 import requests
 import pandas as pd
-import sqlite3
 import time
 from datetime import datetime, timedelta
 from utils.config import (
     SERPAPI_KEY, SERPAPI_BASE_URL, NSE_EXCHANGE,
-    NIFTY50_SYMBOLS, DB_PATH, SERPAPI_DELAY_SEC
+    NIFTY50_SYMBOLS, SERPAPI_DELAY_SEC
 )
+from data.supabase_client import get_client
 
 
 class MarketDataAgent:
     def __init__(self):
-        self.api_key  = SERPAPI_KEY
-        self.db_path  = DB_PATH
-        self._init_db()
-
-    # ── DATABASE SETUP ───────────────────────────────────
-    def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS ohlcv (
-                symbol  TEXT,
-                date    TEXT,
-                open    REAL,
-                high    REAL,
-                low     REAL,
-                close   REAL,
-                volume  REAL,
-                PRIMARY KEY (symbol, date)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS stock_summary (
-                symbol          TEXT PRIMARY KEY,
-                price           REAL,
-                change          REAL,
-                change_pct      REAL,
-                market_cap      TEXT,
-                pe_ratio        REAL,
-                exchange        TEXT,
-                currency        TEXT,
-                last_updated    TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS last_updated (
-                symbol    TEXT PRIMARY KEY,
-                timestamp TEXT
-            )
-        """)
-        conn.commit()
-        conn.close()
+        self.api_key = SERPAPI_KEY
+        self.sb      = get_client()
 
     # ── SERPAPI CALL ─────────────────────────────────────
     def _fetch_google_finance(self, symbol: str, window: str = "MAX") -> dict:
@@ -139,58 +101,68 @@ class MarketDataAgent:
         price      = summary.get("price") or summary.get("previous_close")
         change     = summary.get("price_change", {})
 
+        def _to_float(val):
+            if val is None:
+                return 0.0
+            if isinstance(val, (int, float)):
+                return float(val)
+            import re
+            cleaned = re.sub(r'[^\d.-]', '', str(val))
+            try:
+                return float(cleaned)
+            except ValueError:
+                return 0.0
+
         return {
             "symbol":       symbol.split(":")[0],
-            "price":        price,
-            "change":       change.get("amount", 0),
-            "change_pct":   change.get("percentage", 0),
+            "price":        _to_float(price),
+            "change":       _to_float(change.get("amount", 0)),
+            "change_pct":   _to_float(change.get("percentage", 0)),
             "market_cap":   summary.get("market_cap", ""),
-            "pe_ratio":     summary.get("pe_ratio", None),
+            "pe_ratio":     _to_float(summary.get("pe_ratio")) if summary.get("pe_ratio") else None,
             "exchange":     summary.get("exchange", NSE_EXCHANGE),
             "currency":     summary.get("currency", "INR"),
             "last_updated": datetime.now().isoformat(),
         }
 
-    # ── SAVE TO DB ───────────────────────────────────────
+    # ── SAVE TO SUPABASE ────────────────────────────────
     def _save_ohlcv(self, df: pd.DataFrame):
         if df.empty:
             return
         df = df.copy()
         df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None).astype(str)
-        conn = sqlite3.connect(self.db_path)
-        for _, row in df.iterrows():
-            conn.execute("""
-                INSERT OR IGNORE INTO ohlcv (symbol, date, open, high, low, close, volume)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (row.symbol, row.date, row.open, row.high, row.low, row.close, row.volume))
-        conn.commit()
-        conn.close()
+        rows = df.to_dict(orient="records")
+
+        # Batch upsert in chunks of 500 (Supabase limit)
+        chunk_size = 500
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i:i + chunk_size]
+            self.sb.table("ohlcv").upsert(
+                chunk, on_conflict="symbol,date"
+            ).execute()
 
     def _save_summary(self, s: dict):
         if not s or not s.get("price"):
             return
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("""
-            INSERT OR REPLACE INTO stock_summary
-            (symbol, price, change, change_pct, market_cap, pe_ratio, exchange, currency, last_updated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (s["symbol"], s["price"], s["change"], s["change_pct"],
-              s["market_cap"], s["pe_ratio"], s["exchange"], s["currency"], s["last_updated"]))
-        conn.execute("INSERT OR REPLACE INTO last_updated VALUES (?, ?)",
-                     (s["symbol"], s["last_updated"]))
-        conn.commit()
-        conn.close()
+        self.sb.table("stock_summary").upsert(
+            s, on_conflict="symbol"
+        ).execute()
+        self.sb.table("last_updated").upsert(
+            {"symbol": s["symbol"], "timestamp": s["last_updated"]},
+            on_conflict="symbol"
+        ).execute()
 
     # ── FRESHNESS CHECK ──────────────────────────────────
     def _needs_update(self, symbol: str) -> bool:
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT timestamp FROM last_updated WHERE symbol = ?", (symbol,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
+        resp = (
+            self.sb.table("last_updated")
+            .select("timestamp")
+            .eq("symbol", symbol)
+            .execute()
+        )
+        if not resp.data:
             return True
-        last = datetime.fromisoformat(row[0])
+        last = datetime.fromisoformat(resp.data[0]["timestamp"])
         return (datetime.now() - last) > timedelta(hours=24)
 
     # ── PUBLIC: FETCH ONE SYMBOL ──────────────────────────
@@ -234,31 +206,33 @@ class MarketDataAgent:
         print(f"[MarketDataAgent] {symbol}: {len(df)} data points saved.")
         return df
 
-    # ── PUBLIC: LOAD FROM DB ──────────────────────────────
+    # ── PUBLIC: LOAD FROM SUPABASE ───────────────────────
     def load(self, symbol: str) -> pd.DataFrame:
-        """Load OHLCV from SQLite."""
-        conn = sqlite3.connect(self.db_path)
-        df = pd.read_sql(
-            "SELECT * FROM ohlcv WHERE symbol = ? ORDER BY date ASC",
-            conn, params=(symbol,)
+        """Load OHLCV from Supabase."""
+        resp = (
+            self.sb.table("ohlcv")
+            .select("*")
+            .eq("symbol", symbol)
+            .order("date")
+            .execute()
         )
-        conn.close()
-        df["date"] = pd.to_datetime(df["date"], utc=True).dt.tz_localize(None)
-        df = df.drop_duplicates(subset=["date"]).reset_index(drop=True)
+        df = pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+        if not df.empty:
+            df["date"] = pd.to_datetime(df["date"], utc=True).dt.tz_localize(None)
+            df = df.drop_duplicates(subset=["date"]).reset_index(drop=True)
         return df
 
     def get_summary(self, symbol: str) -> dict:
         """Get latest quote summary for a symbol."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM stock_summary WHERE symbol = ?", (symbol,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
-            return {}
-        cols = ["symbol","price","change","change_pct","market_cap",
-                "pe_ratio","exchange","currency","last_updated"]
-        return dict(zip(cols, row))
+        resp = (
+            self.sb.table("stock_summary")
+            .select("*")
+            .eq("symbol", symbol)
+            .execute()
+        )
+        if resp.data:
+            return resp.data[0]
+        return {}
 
     # ── PUBLIC: RUN FULL BATCH ────────────────────────────
     def run(self, symbols: list = None, force: bool = False):
@@ -277,9 +251,7 @@ class MarketDataAgent:
         print("[MarketDataAgent] Batch fetch complete.")
 
     def get_all_symbols(self) -> list:
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT symbol FROM ohlcv")
-        symbols = [r[0] for r in cursor.fetchall()]
-        conn.close()
-        return symbols
+        resp = self.sb.table("last_updated").select("symbol").execute()
+        if not resp.data:
+            return []
+        return sorted(list({r["symbol"] for r in resp.data}))

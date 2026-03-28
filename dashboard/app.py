@@ -14,9 +14,6 @@ import plotly.graph_objects as go
 import plotly.express as px
 import time
 from datetime import datetime
-import sqlite3
-
-from utils.config         import DB_PATH
 
 from data.database        import Database
 from agents.orchestrator  import Orchestrator
@@ -805,6 +802,7 @@ elif "Deep Analysis" in page:
     with col_s1:
         symbol = st.selectbox("Select Stock", options=all_syms if all_syms else ["RELIANCE"])
     with col_s2:
+        st.markdown("<div style='margin-top:26px'></div>", unsafe_allow_html=True)
         if st.button("🔍 Scan This Stock"):
             with st.spinner(f"Scanning {symbol}..."):
                 orch.scan_single(symbol)
@@ -1154,18 +1152,21 @@ elif "Portfolio Simulator" in page:
     st.divider()
 
     # ── FETCH BACKTEST DATA ─────────────────────────────
-    conn = sqlite3.connect(DB_PATH)
-    bt_df = pd.read_sql("""
-        SELECT b.symbol, b.pattern, b.win_rate, b.avg_return,
-               b.total_occurrences, b.profitable_trades,
-               b.avg_win, b.avg_loss, b.max_drawdown,
-               i.insight_json
-        FROM backtest_results b
-        LEFT JOIN insights i ON b.symbol = i.symbol AND b.pattern = i.pattern
-        WHERE b.win_rate >= ?
-        ORDER BY b.win_rate DESC
-    """, conn, params=(min_winrate,))
-    conn.close()
+    # Fetch backtests
+    b_resp = orch.sb.table("backtest_results").select("*").gte("win_rate", min_winrate).order("win_rate", desc=True).execute()
+    bt_df = pd.DataFrame(b_resp.data) if b_resp.data else pd.DataFrame()
+
+    if not bt_df.empty:
+        # Fetch matching insights
+        symbols_list = bt_df["symbol"].unique().tolist()
+        i_resp = orch.sb.table("insights").select("symbol, pattern, insight_json").in_("symbol", symbols_list).execute()
+        i_df = pd.DataFrame(i_resp.data) if i_resp.data else pd.DataFrame()
+
+        # Merge them (Left Join)
+        if not i_df.empty:
+            bt_df = pd.merge(bt_df, i_df, on=["symbol", "pattern"], how="left")
+        else:
+            bt_df["insight_json"] = None
 
     if bt_df.empty:
         st.warning("No backtest data found. Run the pipeline first.")

@@ -9,32 +9,13 @@ Detects 4 high-impact technical patterns:
 
 import pandas as pd
 import numpy as np
-import sqlite3
 from datetime import datetime
-from utils.config import DB_PATH
+from data.supabase_client import get_client
 
 
 class PatternAgent:
     def __init__(self):
-        self.db_path = DB_PATH
-        self._init_db()
-
-    def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS signals (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol      TEXT,
-                date        TEXT,
-                pattern     TEXT,
-                confidence  REAL,
-                details     TEXT,
-                created_at  TEXT,
-                UNIQUE(symbol, date, pattern)
-            )
-        """)
-        conn.commit()
-        conn.close()
+        self.sb = get_client()
 
     # ── INDICATOR HELPERS ────────────────────────────────
     def _sma(self, s: pd.Series, w: int) -> pd.Series:
@@ -186,17 +167,21 @@ class PatternAgent:
     def save_signals(self, signals: list[dict]):
         if not signals:
             return
-        conn = sqlite3.connect(self.db_path)
-        now  = datetime.now().isoformat()
+        now = datetime.now().isoformat()
+        rows = []
         for s in signals:
-            conn.execute("""
-                INSERT OR IGNORE INTO signals
-                (symbol, date, pattern, confidence, details, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (s["symbol"], s["date"], s["pattern"],
-                  s["confidence"], s["details"], now))
-        conn.commit()
-        conn.close()
+            rows.append({
+                "symbol":     s["symbol"],
+                "date":       s["date"],
+                "pattern":    s["pattern"],
+                "confidence": s["confidence"],
+                "details":    s["details"],
+                "created_at": now,
+            })
+        # Use upsert with ignore_duplicates to replicate INSERT OR IGNORE
+        self.sb.table("signals").upsert(
+            rows, on_conflict="symbol,date,pattern", ignore_duplicates=True
+        ).execute()
 
     # ── MAIN ENTRY ───────────────────────────────────────
     def run(self, symbol: str, df: pd.DataFrame) -> list[dict]:
@@ -211,10 +196,11 @@ class PatternAgent:
         return signals
 
     def get_recent_signals(self, limit: int = 100) -> pd.DataFrame:
-        conn = sqlite3.connect(self.db_path)
-        df   = pd.read_sql(
-            "SELECT * FROM signals ORDER BY created_at DESC LIMIT ?",
-            conn, params=(limit,)
+        resp = (
+            self.sb.table("signals")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
         )
-        conn.close()
-        return df
+        return pd.DataFrame(resp.data) if resp.data else pd.DataFrame()

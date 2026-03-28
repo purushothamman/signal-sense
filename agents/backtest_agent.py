@@ -9,38 +9,15 @@ success        = forward_return > 0
 
 import pandas as pd
 import numpy as np
-import sqlite3
 from datetime import datetime
-from utils.config import DB_PATH, HOLD_DAYS, MIN_OCCURRENCES
+from utils.config import HOLD_DAYS, MIN_OCCURRENCES
+from data.supabase_client import get_client
 
 
 class BacktestAgent:
     def __init__(self):
-        self.db_path    = DB_PATH
-        self.hold_days  = HOLD_DAYS
-        self._init_db()
-
-    def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS backtest_results (
-                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol              TEXT,
-                pattern             TEXT,
-                win_rate            REAL,
-                avg_return          REAL,
-                max_drawdown        REAL,
-                total_occurrences   INTEGER,
-                profitable_trades   INTEGER,
-                avg_win             REAL,
-                avg_loss            REAL,
-                risk_reward         REAL,
-                created_at          TEXT,
-                UNIQUE(symbol, pattern)
-            )
-        """)
-        conn.commit()
-        conn.close()
+        self.hold_days = HOLD_DAYS
+        self.sb        = get_client()
 
     # ── HISTORICAL PATTERN SCANNERS ──────────────────────
     # Lightweight re-implementations (no DB writes) for fast backtesting.
@@ -162,7 +139,6 @@ class BacktestAgent:
         }
 
         results = {}
-        conn    = sqlite3.connect(self.db_path)
         now     = datetime.now().isoformat()
 
         for name, scanner in scanners.items():
@@ -175,47 +151,45 @@ class BacktestAgent:
 
             results[name] = {**metrics, "symbol": symbol, "pattern": name}
 
-            conn.execute("""
-                INSERT OR REPLACE INTO backtest_results
-                (symbol, pattern, win_rate, avg_return, max_drawdown,
-                 total_occurrences, profitable_trades, avg_win, avg_loss,
-                 risk_reward, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (symbol, name, metrics["win_rate"], metrics["avg_return"],
-                  metrics["max_drawdown"], metrics["total_occurrences"],
-                  metrics["profitable_trades"], metrics["avg_win"],
-                  metrics["avg_loss"], metrics["risk_reward"], now))
+            self.sb.table("backtest_results").upsert({
+                "symbol":            symbol,
+                "pattern":           name,
+                "win_rate":          metrics["win_rate"],
+                "avg_return":        metrics["avg_return"],
+                "max_drawdown":      metrics["max_drawdown"],
+                "total_occurrences": metrics["total_occurrences"],
+                "profitable_trades": metrics["profitable_trades"],
+                "avg_win":           metrics["avg_win"],
+                "avg_loss":          metrics["avg_loss"],
+                "risk_reward":       metrics["risk_reward"],
+                "created_at":        now,
+            }, on_conflict="symbol,pattern").execute()
 
             print(f"[BacktestAgent] {symbol} | {name} | "
                   f"WinRate={metrics['win_rate']}% | "
                   f"AvgReturn={metrics['avg_return']}% | "
                   f"N={metrics['total_occurrences']}")
 
-        conn.commit()
-        conn.close()
         return results
 
     def get(self, symbol: str, pattern: str) -> dict:
         """Fetch a single backtest result."""
-        conn   = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM backtest_results WHERE symbol=? AND pattern=?",
-            (symbol, pattern)
+        resp = (
+            self.sb.table("backtest_results")
+            .select("*")
+            .eq("symbol", symbol)
+            .eq("pattern", pattern)
+            .execute()
         )
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
-            return {}
-        cols = ["id","symbol","pattern","win_rate","avg_return","max_drawdown",
-                "total_occurrences","profitable_trades","avg_win","avg_loss",
-                "risk_reward","created_at"]
-        return dict(zip(cols, row))
+        if resp.data:
+            return resp.data[0]
+        return {}
 
     def get_all(self) -> pd.DataFrame:
-        conn = sqlite3.connect(self.db_path)
-        df   = pd.read_sql(
-            "SELECT * FROM backtest_results ORDER BY win_rate DESC", conn
+        resp = (
+            self.sb.table("backtest_results")
+            .select("*")
+            .order("win_rate", desc=True)
+            .execute()
         )
-        conn.close()
-        return df
+        return pd.DataFrame(resp.data) if resp.data else pd.DataFrame()

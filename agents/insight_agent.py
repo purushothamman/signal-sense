@@ -6,10 +6,10 @@ Output is always JSON with: summary, action, reasoning, risk, sentiment.
 """
 
 import json
-import sqlite3
 from datetime import datetime
 from groq import Groq
-from utils.config import GROQ_API_KEY, GROQ_MODEL, GROQ_TEMPERATURE, GROQ_MAX_TOKENS, DB_PATH
+from utils.config import GROQ_API_KEY, GROQ_MODEL, GROQ_TEMPERATURE, GROQ_MAX_TOKENS
+from data.supabase_client import get_client
 
 SYSTEM_PROMPT = """You are SignalSense AI, an expert financial analyst for Indian retail investors.
 Convert technical signal data into clear, balanced, plain-English investment insights.
@@ -19,25 +19,8 @@ Respond ONLY with valid JSON — no markdown, no code fences, no extra text."""
 
 class InsightAgent:
     def __init__(self):
-        self.client  = Groq(api_key=GROQ_API_KEY)
-        self.db_path = DB_PATH
-        self._init_db()
-
-    def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS insights (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol       TEXT,
-                pattern      TEXT,
-                date         TEXT,
-                insight_json TEXT,
-                created_at   TEXT,
-                UNIQUE(symbol, pattern, date)
-            )
-        """)
-        conn.commit()
-        conn.close()
+        self.client = Groq(api_key=GROQ_API_KEY)
+        self.sb     = get_client()
 
     # ── PROMPT BUILDER ───────────────────────────────────
     def _build_prompt(self, signal: dict, backtest: dict) -> str:
@@ -123,24 +106,26 @@ Return ONLY this JSON object:
 
     # ── CACHE ─────────────────────────────────────────────
     def _get_cached(self, symbol: str, pattern: str, date: str) -> dict:
-        conn   = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT insight_json FROM insights WHERE symbol=? AND pattern=? AND date=?",
-            (symbol, pattern, date)
+        resp = (
+            self.sb.table("insights")
+            .select("insight_json")
+            .eq("symbol", symbol)
+            .eq("pattern", pattern)
+            .eq("date", date)
+            .execute()
         )
-        row = cursor.fetchone()
-        conn.close()
-        return json.loads(row[0]) if row else {}
+        if resp.data:
+            return json.loads(resp.data[0]["insight_json"])
+        return {}
 
     def _save(self, symbol: str, pattern: str, date: str, insight: dict):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("""
-            INSERT OR REPLACE INTO insights (symbol, pattern, date, insight_json, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (symbol, pattern, date, json.dumps(insight), datetime.now().isoformat()))
-        conn.commit()
-        conn.close()
+        self.sb.table("insights").upsert({
+            "symbol":       symbol,
+            "pattern":      pattern,
+            "date":         date,
+            "insight_json": json.dumps(insight),
+            "created_at":   datetime.now().isoformat(),
+        }, on_conflict="symbol,pattern,date").execute()
 
     # ── PUBLIC RUN ───────────────────────────────────────
     def run(self, signal: dict, backtest: dict) -> dict:

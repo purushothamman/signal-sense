@@ -1,115 +1,85 @@
-# 📡 SignalSense AI
-**Autonomous Stock Pattern Intelligence Agent**
+# 🚀 SignalSense AI
+
+**SignalSense AI** is an autonomous, scalable financial analysis pipeline that continuously tracks market data, detects advanced technical patterns, scientifically backtests its own findings, and uses cutting-edge LLMs to write actionable, human-like summaries of trade opportunities—all visualized in a stunning **Streamlit Dashboard** and backed by a cloud-native **Supabase (PostgreSQL)** database.
+
+It doesn't just draw lines on charts. It scientifically scores those lines across historical timeframes and asks Artificial Intelligence to justify the trade.
 
 ---
 
-## 🗂️ Project Structure
+## 🧠 How It Works: The Autonomous Agent Pipeline
 
-```
-signalsense/
-├── agents/
-│   ├── market_data_agent.py   # Module 1 — SerpAPI Google Finance
-│   ├── pattern_agent.py       # Module 2 — Pattern Detection
-│   ├── backtest_agent.py      # Module 3 — Backtesting Engine
-│   ├── insight_agent.py       # Module 4 — Groq LLM Insights
-│   ├── orchestrator.py        # Module 6 — Pipeline Coordinator
-│   └── alerts.py              # Module 7 — Alerts (Console + Telegram)
-├── data/
-│   └── database.py            # Module 5 — SQLite Interface
-├── dashboard/
-│   └── app.py                 # Module 8 — Streamlit Dashboard
-├── utils/
-│   └── config.py              # API keys & settings
-├── requirements.txt
-└── README.md
-```
+The platform is powered by a multi-agent architectural pipeline. An `Orchestrator` runs all the agents sequentially over a customizable universe of stock ticker symbols (like `RELIANCE`, `TCS`, `INFY`):
 
----
+### 1. Market Data Agent (`market_data_agent.py`)
+- **What it does**: Silently pulls daily Open-High-Low-Close-Volume (OHLCV) stock data, price quotes, and market caps. 
+- **The Tech**: Interfaces with **SerpAPI (Google Finance)** to navigate around complex web hurdles and caches this raw stock data directly into a Supabase PostgreSQL `ohlcv` and `stock_summary` table.
 
-## ⚙️ Setup
+### 2. Pattern Agent (`pattern_agent.py`)
+- **What it does**: Runs strict, math-based algorithms over the OHLCV data to detect technical formations.
+- **The Models/Formations**: 
+  - **Volume Breakouts**: Price punches through the 20-day high on significantly larger-than-average trade volume.
+  - **Golden Cross (SMA Crossovers)**: Short-term Simple Moving Average (SMA-10) reliably crosses above a longer-term baseline (SMA-30).
+  - **RSI Divergences**: Relative Strength Index deviates from pure price action, signaling a trend reversal.
+  - **Double Bottoms**: "W" shaped price recovery patterns showing strong, tested support lines.
+- **The Scoring**: Assigns a calculated **Confidence %** (from 50% to 100%) to each detected pattern based on volume multipliers and similarity variances.
 
-### 1. Install dependencies
-```bash
-pip install -r requirements.txt
-```
+### 3. Backtest Agent (`backtest_agent.py`)
+- **What it does**: Checks its own historical accuracy immediately. 
+- **The Math**: For every new signal detected, it looks backward to find *every other time* that exact signal appeared for that stock. It computes the mathematical **Win Rate** (%), **Average Return** (%), and **Max Drawdown** over the next `N` days following those historical triggers, storing these rigorous statistics globally.
 
-### 2. Set API keys
-Create a `.env` file in the root:
-```env
-SERPAPI_KEY=your_serpapi_key_here
-GROQ_API_KEY=your_groq_api_key_here
+### 4. Insight Agent (`insight_agent.py`)
+- **What it does**: Acts as your personal quantitative analyst.
+- **The LLM**: Feeds the raw Pattern Data and Backtest Math into a **Groq AI** endpoint (running models like Llama 3) to synthesize a highly structured JSON response. It generates a final `suggested_action` (Buy, Watch, Avoid), `sentiment` (Bullish/Bearish), and a concise written summary explaining the fundamental/technical rationale.
 
-# Optional — for Telegram alerts
-TELEGRAM_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
-```
-
-Or export them directly:
-```bash
-export SERPAPI_KEY="your_key"
-export GROQ_API_KEY="your_key"
-```
-
-### 3. Run the dashboard
-```bash
-cd signalsense
-streamlit run dashboard/app.py
-```
+### 5. Alerts Agent (`alerts.py`)
+- **What it does**: Continuously monitors the database for "Golden Opportunities" (Signals with extreme confidence thresholds AND high historical win rates) and packages them into high-stakes alerts.
 
 ---
 
-## 🔑 APIs Used
+## 📊 The Tech Stack
 
-| Module | API | Free? |
-|--------|-----|-------|
-| Market Data | SerpAPI Google Finance | 100 free searches/month |
-| Insight Agent | Groq (Llama 3.3 70B) | ✅ Free tier |
-| Indicators | numpy + pandas (local) | ✅ Free |
-| Storage | SQLite (local) | ✅ Free |
-| Dashboard | Streamlit | ✅ Free |
-| Alerts | Telegram Bot API | ✅ Free |
+- **Frontend:** Streamlit — A highly responsive, dynamic React-based Python dashboard engine containing:
+  - **Market Radar**: A live feed of all generated signals filterable by Action, Pattern, and minimum Confidence.
+  - **Deep Analysis**: Interactive `plotly` candlestick charts visualizing prices, SMA overlays, and volume bar graphs.
+  - **Portfolio Simulator**: Real-time backtest aggregation letting users filter the most statistically reliable trade setups historically found in the system.
+- **Backend Infrastructure:** Supabase (PostgreSQL) — Used to handle heavy data operations, guaranteeing persistence across cloud environments. Includes schemas for `ohlcv`, `signals`, `insights`, and `activity_log`.
+- **APIs:** SerpAPI (Market Data fetching) & Groq (Lightning-fast Large Language Model inferencing).
 
 ---
 
-## 📌 Important Notes on SerpAPI Google Finance
+## 🛠️ Getting Started / Setup
 
-- Symbol format for NSE: `RELIANCE:NSE`
-- `window=MAX` gives the maximum historical graph data
-- Graph data includes: date, price, volume per day
-- High/Low values are estimated (±0.5%) since Google Finance only provides close price in graph
-- **Free plan: 100 searches/month** — scan selectively or use cached DB data
+### Prerequisites
+Make sure you have **Python 3.10+** installed.
 
----
+1. **Clone & Install Dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+   *Core dependencies involve `streamlit`, `pandas`, `plotly`, `groq`, `google-search-results` (SerpAPI), and `supabase`.*
 
-## 🔁 Pipeline Flow
+2. **Initialize Database**
+   - Create a free project on [Supabase](https://supabase.com).
+   - Go to the Supabase SQL Editor and run the entire contents of the root `supabase_schema.sql` script to deploy all 8 required database tables.
 
-```
-SerpAPI Google Finance
-       ↓
-  OHLCV stored in SQLite
-       ↓
-  Pattern Detection (Breakout, Golden Cross, RSI Divergence, Double Bottom)
-       ↓
-  Backtesting (Win Rate, Avg Return, Drawdown, Risk/Reward)
-       ↓
-  Groq LLM Insight (Plain-English Action + Sentiment)
-       ↓
-  Alerts → Console / Telegram
-       ↓
-  Streamlit Dashboard (Market Radar + Deep Analysis + Activity Log)
-```
+3. **Set Up Environment Credentials**
+   Open your `.env` file (or create one in the root folder) and configure your API keys:
+   ```env
+   SERPAPI_KEY=your_serpapi_key_here
+   GROQ_API_KEY=your_groq_key_here
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_KEY=your_supabase_service_role_key
+   ```
+   *(Note: Strongly recommend using the Supabase `service_role` key since the backend does not rely on direct viewer authentication).*
 
----
-
-## 📊 Patterns Detected
-
-| Pattern | Signal |
-|---------|--------|
-| **Breakout** | Close > 20-day high + Volume > 1.5× average |
-| **Golden Cross** | SMA50 crosses above SMA200 |
-| **RSI Divergence** | Price lower-low, RSI higher-low (bullish momentum reversal) |
-| **Double Bottom** | Two lows within 3% of each other with neckline confirmation |
+4. **Launch Application!**
+   Start the interactive Streamlit engine:
+   ```bash
+   python -m streamlit run dashboard/app.py
+   ```
 
 ---
 
-*Not financial advice. Always do your own research.*
+## 📌 Architecture Philosophy
+
+SignalSense AI embodies **quantamental** investing—merging quantitative automation with fundamental AI reasoning. Its design deliberately isolates data fetching, pattern detection, statistical verification, and humanized reasoning into independent, decoupled "Agent" files. This guarantees that if one component breaks (e.g. SerpAPI rate limits), the overarching pipeline and dashboard gracefully fail over and retrieve cached data from Supabase.

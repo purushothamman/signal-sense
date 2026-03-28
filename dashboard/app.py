@@ -561,46 +561,54 @@ with st.sidebar:
     if st.button("🚀 Scan Market"):
         syms = [s.strip().upper() for s in symbols_input.split(",")] if symbols_input else None
 
-        # ── Live Scan Animation ──────────────────────────
+        # ── Live Scan Execution ──────────────────────────
         progress_container = st.empty()
         log_container = st.empty()
 
-        steps = [
-            ("📡", "Connecting to SerpAPI Google Finance..."),
-            ("📊", "Fetching OHLCV data for NIFTY50..."),
-            ("🔍", "Running Pattern Detection Engine..."),
-            ("📈", "Detecting Breakouts & Golden Cross..."),
-            ("🧮", "Computing Backtests & Win Rates..."),
-            ("🤖", "Generating Groq AI Insights..."),
-            ("🔔", "Pushing High-Confidence Alerts..."),
-        ]
+        with progress_container.container():
+            st.markdown("""
+            <div style='background:rgba(124,58,237,0.1);border:1px solid rgba(124,58,237,0.3);
+            border-radius:12px;padding:20px;'>
+            <div style='color:#a855f7;font-size:0.75rem;letter-spacing:2px;margin-bottom:8px;
+                text-transform:uppercase;font-weight:600;'>
+            SCANNING IN PROGRESS</div>
+            <div style='color:white;font-size:1rem;font-weight:600;margin-bottom:12px;
+                font-family:Outfit,sans-serif;'>
+            ⚙️ Running Live Pipeline...</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        live_logs = []
+        class StreamlitRedirect:
+            def __init__(self, container):
+                self.container = container
+                self.logs = []
+                self.buffer = ""
+                self.orig_stdout = sys.stdout
 
-        for i, (icon, msg) in enumerate(steps):
-            # Progress bar
-            with progress_container.container():
-                st.markdown(f"""
-                <div style='background:rgba(124,58,237,0.1);border:1px solid rgba(124,58,237,0.3);
-                border-radius:12px;padding:20px;'>
-                <div style='color:#a855f7;font-size:0.75rem;letter-spacing:2px;margin-bottom:8px;
-                    text-transform:uppercase;font-weight:600;'>
-                SCANNING IN PROGRESS</div>
-                <div style='color:white;font-size:1rem;font-weight:600;margin-bottom:12px;
-                    font-family:Outfit,sans-serif;'>
-                {icon} {msg}</div>
-                </div>
-                """, unsafe_allow_html=True)
-                st.progress((i + 1) / len(steps))
+            def write(self, data):
+                self.orig_stdout.write(data)
+                self.buffer += data
+                while "\n" in self.buffer:
+                    line, self.buffer = self.buffer.split("\n", 1)
+                    if line.strip():
+                        self.logs.append(line.strip())
+                        if len(self.logs) > 30:
+                            self.logs.pop(0)
+                        self.container.code("\n".join(self.logs), language="bash")
 
-            # Live log feed
-            live_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {icon} {msg}")
-            with log_container.container():
-                st.code("\n".join(live_logs), language="bash")
+            def flush(self):
+                self.orig_stdout.flush()
 
-            time.sleep(0.8)
+        import sys
+        redirector = StreamlitRedirect(log_container)
+        
+        try:
+            sys.stdout = redirector
+            orch.run(symbols=syms, force=force_refresh)
+        finally:
+            sys.stdout = redirector.orig_stdout
 
-        # Run actual pipeline
+        # Complete
         with progress_container.container():
             st.markdown("""
             <div style='background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);
@@ -609,8 +617,9 @@ with st.sidebar:
             ✅ Pipeline Complete!</div>
             </div>
             """, unsafe_allow_html=True)
-
-        orch.run(symbols=syms, force=force_refresh)
+            
+        import time
+        time.sleep(1.5)
         st.rerun()
 
     st.divider()

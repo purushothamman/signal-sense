@@ -708,7 +708,7 @@ if "Market Radar" in page:
         with col_f2:
             act_filter = st.multiselect("Action", ["Buy","Watch","Avoid"])
         with col_f3:
-            min_conf   = st.slider("Min Confidence %", 0, 100, 50)
+            min_conf   = st.slider("Min Confidence %", 50, 100, 60)
 
         filtered = radar.copy()
         if pat_filter:
@@ -716,6 +716,7 @@ if "Market Radar" in page:
         if act_filter and "suggested_action" in filtered:
             filtered = filtered[filtered["suggested_action"].isin(act_filter)]
         if "confidence" in filtered.columns:
+            filtered["confidence"] = pd.to_numeric(filtered["confidence"], errors="coerce").fillna(0)
             filtered = filtered[filtered["confidence"] >= min_conf]
 
         # ── SIGNAL CARDS ─────────────────────────────────
